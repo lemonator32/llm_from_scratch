@@ -201,18 +201,33 @@ impl GPT {
         }
     }
 
-    /// One Adam step: forward, backward, update every parameter, return loss.
-    pub fn train_step(&mut self, ids: &[usize], targets: &[usize], opt: &mut Adam) -> f32 {
+    /// Forward + backward on one sequence, returning the loss and a
+    /// snapshot of every parameter's gradient (without applying an update).
+    /// Used for gradient accumulation: call this several times, sum/average
+    /// the returned grad maps, then apply once via `apply_grads`.
+    pub fn forward_backward(&self, ids: &[usize], targets: &[usize]) -> (f32, HashMap<String, Vec<f32>>) {
         let (loss, leaves) = self.forward(ids, Some(targets));
         tensor_backward(&loss);
         let loss_val = loss.data()[0];
+        let grads: HashMap<String, Vec<f32>> =
+            leaves.iter().map(|(name, t)| (name.clone(), t.grad())).collect();
+        (loss_val, grads)
+    }
 
-        for name in leaves.keys() {
-            let grad = leaves[name].grad();
+    /// Apply a (typically averaged/accumulated) gradient map to the
+    /// parameters via the optimizer.
+    pub fn apply_grads(&mut self, grads: &HashMap<String, Vec<f32>>, opt: &mut Adam) {
+        for (name, g) in grads.iter() {
             let param = self.params.get_mut(name);
-            opt.step(param, &grad);
+            opt.step(param, g);
         }
-        loss_val
+    }
+
+    /// One Adam step: forward, backward, update every parameter, return loss.
+    pub fn train_step(&mut self, ids: &[usize], targets: &[usize], opt: &mut Adam) -> f32 {
+        let (loss, grads) = self.forward_backward(ids, targets);
+        self.apply_grads(&grads, opt);
+        loss
     }
 
     pub fn generate(

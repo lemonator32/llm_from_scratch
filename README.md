@@ -49,14 +49,26 @@ cargo build --release
 ./target/release/llm_from_scratch
 ```
 
-It trains on `data/input.txt` (Tiny Shakespeare is included, truncated to
-the first 100k characters for speed) for 2000 steps by default, printing
-loss every 50 steps, then generates a sample of text.
+It trains on `data/input.txt` (Tiny Shakespeare, truncated to the first
+100k characters for speed), then generates a sample of text.
 
-Override the step count:
+Two environment variables control training:
+
 ```bash
-STEPS=5000 ./target/release/llm_from_scratch
+STEPS=3000 ACCUM=8 ./target/release/llm_from_scratch
 ```
+
+- `STEPS` (default 1500) — number of **optimizer updates**.
+- `ACCUM` (default 8) — number of sequences whose gradients are averaged
+  together per update (**gradient accumulation**). Total forward/backward
+  passes = `STEPS * ACCUM`.
+
+Training also uses a **cosine learning-rate schedule with linear warmup**:
+the LR ramps up from ~0 over the first 5% of updates, then decays on a
+cosine curve down to 10% of its peak value by the end of training. Both of
+these (accumulation + decay) exist to tame the noisy, erratic loss you get
+from single-sequence, constant-LR training — see the conversation that
+produced this version for the reasoning.
 
 Swap in your own text by replacing `data/input.txt`.
 
@@ -64,21 +76,23 @@ Swap in your own text by replacing `data/input.txt`.
 
 With this tiny model/data/step-count, don't expect coherent prose — you'll
 see loss drop from ~4.1 (roughly `ln(vocab_size)`, i.e. random guessing) to
-around ~2.0–2.5, and the generated text will start showing real structure:
-word-length tokens, spaces in the right places, capitalization after
-periods, recognizable English word fragments, and Shakespeare-ish
-punctuation — without ever having been told what a word is. That's the
-transformer learning character-level statistics purely from gradient
-descent on next-token prediction.
+around ~2.3–2.5, now descending fairly smoothly instead of bouncing between
+readings 0.5+ apart. The generated text will show real structure: word-length
+tokens, spaces in the right places, capitalization after line breaks,
+recognizable English word fragments, and even Shakespeare's
+`SPEAKER NAME:` script formatting — without ever having been told what a
+word or a speaker cue is. That's the transformer learning character-level
+statistics purely from gradient descent on next-token prediction. Getting
+to actually coherent words/sentences takes a substantially bigger model,
+more data, and far more training steps than this toy config runs in a
+couple of minutes.
 
 ## Where to go from here
 
-- **Bigger/longer**: raise `n_embd`, `n_layer`, `block_size`, or `steps` in
-  `main.rs`. Training time scales roughly with `n_embd^2 * n_layer * seq_len`
-  per step since matmuls are unoptimized loops.
-- **Batching**: right now each step processes one sequence at a time. Add a
-  batch dimension (a 3rd tensor axis, or just average gradients over several
-  forward/backward passes before the Adam step) for less noisy training.
+- **Bigger/longer**: raise `n_embd`, `n_layer`, `block_size` in `main.rs`,
+  or just increase `STEPS`/`ACCUM`. Training time scales roughly with
+  `n_embd^2 * n_layer * seq_len * STEPS * ACCUM` since matmuls are
+  unoptimized loops.
 - **GELU instead of ReLU**: swap `.relu()` for a GELU op in `tensor.rs`
   (needs its own forward + backward) — a small, contained exercise once you're
   comfortable with the existing ops.
